@@ -1,0 +1,5 @@
+*.iml
+.idea
+.firebase
+.firebaserc
+node_modules
