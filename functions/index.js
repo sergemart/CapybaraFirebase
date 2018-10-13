@@ -67,19 +67,40 @@ exports.createFamily = functions.https.onCall((data, context) => {
     const email = context.auth.token.email || null;
     let familyUid;
 
-    return admin.firestore()                                                                                            // the Firestore client
-        .collection('families')
-        .add({ creator: userUid})
-        .then( (writeResult) => {
-            familyUid = writeResult.id;
-            return {
-                returnCode: "00",
-                familyUid: familyUid,
+    const familiesRef = admin.firestore().collection('families');
+    return familiesRef.where('creator', '==', userUid)                                                                  // query for families created by the user
+        .get()
+        .then(snapshot => {
+            if (snapshot.empty) {                                                                                       // no such families; creating one
+                return familiesRef
+                    .add({creator: userUid})
+                    .then((writeResult) => {
+                        familyUid = writeResult.id;
+                        return {
+                            returnCode: "00",
+                            familyUid: familyUid,
+                        }
+                    })
+                    .catch((error) => {
+                        console.log(`User ${email} error while creating family data`);
+                        throw new functions.https.HttpsError('unknown', error);
+                    })
+                ;
+            } else if (snapshot.size !== 1) {                                                                           // many such families; exception
+                console.log(`User ${email} has more than one family`);
+                throw new functions.https.HttpsError('internal', 'User has more than one family');
+            } else {                                                                                                    // the family already exists; return its id
+                return {
+                    returnCode: "01",
+                    familyUid: snapshot.docs[0].id,
+                }
             }
         })
         .catch((error) => {
-            console.log(`User ${email} error while creating ${deviceToken}: ${error}`);
+            console.log(`User ${email} error while requesting family data`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
+
+
 });
