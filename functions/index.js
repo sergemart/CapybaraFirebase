@@ -55,7 +55,7 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
 
 
 /**
- * Create a family
+ * Create a family data, or return existing one
  * Implemented as a HTTPS callable function: f(data, context)
  */
 exports.createFamily = functions.https.onCall((data, context) => {
@@ -101,6 +101,4 @@ exports.createFamily = functions.https.onCall((data, context) => {
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
-
-
 });
