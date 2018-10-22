@@ -55,7 +55,8 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
 
 
 /**
- * Create a family data, or return existing one
+ * Create a family data, if no such.
+ * Return a uid of created or existing data.
  * Implemented as a HTTPS callable function: f(data, context)
  */
 exports.createFamily = functions.https.onCall((data, context) => {
@@ -86,9 +87,11 @@ exports.createFamily = functions.https.onCall((data, context) => {
                         throw new functions.https.HttpsError('unknown', error);
                     })
                 ;
-            } else if (snapshot.size !== 1) {                                                                           // many such families; exception
+            } else if (snapshot.size !== 1) {                                                                           // many such families; error
                 console.log(`User ${email} has more than one family`);
-                throw new functions.https.HttpsError('internal', 'User has more than one family');
+                return {
+                    returnCode: "90",
+                }
             } else {                                                                                                    // the family already exists; return its id
                 return {
                     returnCode: "01",
