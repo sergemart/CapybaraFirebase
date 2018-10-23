@@ -13,6 +13,54 @@ const FieldValue = admin.firestore.FieldValue;
 // --------------------------- Messaging
 
 /**
+ * Send an invite to join a family from a major app to a minor app
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - getting an invitee user record from the system by invitee email;
+ * - getting an invitee device token from database by invitee user uid;
+ * - composing an invite message using device token;
+ * - sending the message
+ */
+exports.sendInvite = functions.https.onCall((data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
+
+    const userUid = context.auth.uid;
+    const email = context.auth.token.email || null;
+    const inviteeEmail = data.inviteeEmail;
+    const usersRef = admin.firestore().collection('users');
+
+    return admin.auth().getUserByEmail(inviteeEmail)
+        .then( (userRecord) => {
+            const userRef = usersRef.doc(userRecord.uid);
+            return userRef.get()
+                .then( (userSnapshot) => {
+                    const deviceToken = userSnapshot.data().deviceToken;
+                    const inviteMessage = {
+                        token: deviceToken,
+                        data: {
+                            messageType: "invite",
+                            inviting: email,
+                        }
+                    };
+                    return admin.messaging().send(inviteMessage)
+                        .then( (messageId) => {
+                            return {
+                                returnCode: "00",
+                                messageId: messageId,
+                            }
+                        })
+                    ;
+                })
+            ;
+        })
+        .catch((error) => {
+            console.log(`The invite message from ${email} not sent to ${inviteeEmail}: ${error}`);
+            throw new functions.https.HttpsError('unknown', error);
+        })
+    ;
+});
+
+
+/**
  * Send a location from a minor app to major apps
  * Implemented as a HTTPS callable function f(data, context)
  */
@@ -32,7 +80,9 @@ exports.sendLocation = functions.https.onCall((data, context) => {
 
 /**
  * Update a stored device token used for FCM
- * Implemented as a HTTPS callable function f(data, context) which is inserting or updating an attribute of a document
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - getting a calling user document from the database by the system-provided uid;
+ * - replacing the document content with new one containing a device token (TODO: make update instead of replace)
  */
 exports.updateDeviceToken = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
@@ -43,8 +93,7 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
     const email = context.auth.token.email || null;
     const deviceToken = data.deviceToken;
 
-    return admin.firestore()                                                                                            // the Firestore client
-        .collection('users')
+    return admin.firestore().collection('users')                                                                        // the Firestore client
         .doc(userUid)
         .set({ deviceToken: deviceToken })                                                                               // insert or update
         .then( (writeResult) => {
@@ -65,7 +114,8 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
 /**
  * Create a family data, if no ones.
  * Return a uid of created or existing data.
- * Implemented as a HTTPS callable function f(data, context) which is reading a collection and inserting a document into it
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - reading a collection and inserting a document into it
  */
 exports.createFamily = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
@@ -75,8 +125,7 @@ exports.createFamily = functions.https.onCall((data, context) => {
     const familiesRef = admin.firestore().collection('families');
     let familyUid;
 
-    return familiesRef.where('creator', '==', userUid)                                                                  // query for families created by the user
-        .get()
+    return familiesRef.where('creator', '==', userUid).get()                                                            // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no such families; creating one
                 return familiesRef
@@ -111,7 +160,8 @@ exports.createFamily = functions.https.onCall((data, context) => {
 
 /**
  * Insert a family member into family data
- * Implemented as a HTTPS callable function f(data, context) which is inserting or updating an attribute of a document
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - inserting or updating an attribute of a document
  */
 exports.createFamilyMember = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
@@ -159,7 +209,8 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
 
 /**
  * Remove a family member from family data
- * Implemented as a HTTPS callable function f(data, context) which is removing an attribute from a document
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - removing an attribute from a document
  */
 exports.deleteFamilyMember = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
