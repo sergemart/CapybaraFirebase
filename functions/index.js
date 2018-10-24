@@ -10,13 +10,11 @@ admin.firestore().settings(settings);
 const FieldValue = admin.firestore.FieldValue;
 
 
-// --------------------------- Messaging
-
 /**
  * Send an invite to join a family from a major app to a minor app
  * Implemented as a HTTPS callable function f(data, context) which is
- * - getting an invitee user record from the system by invitee email;
- * - getting an invitee device token from database by invitee user uid;
+ * - getting an invitee user record from the system by the invitee email;
+ * - getting an invitee device token from database by the invitee user uid;
  * - composing an invite message using device token;
  * - sending the message
  */
@@ -24,7 +22,7 @@ exports.sendInvite = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
     const userUid = context.auth.uid;
-    const email = context.auth.token.email || null;
+    const callerEmail = context.auth.token.email || null;
     const inviteeEmail = data.inviteeEmail;
     const usersRef = admin.firestore().collection('users');
 
@@ -38,7 +36,7 @@ exports.sendInvite = functions.https.onCall((data, context) => {
                         token: deviceToken,
                         data: {
                             messageType: "invite",
-                            inviting: email,
+                            invitingEmail: callerEmail,
                         }
                     };
                     return admin.messaging().send(inviteMessage)
@@ -53,7 +51,87 @@ exports.sendInvite = functions.https.onCall((data, context) => {
             ;
         })
         .catch((error) => {
-            console.log(`The invite message from ${email} not sent to ${inviteeEmail}: ${error}`);
+            console.log(`The invite message from ${callerEmail} not sent to ${inviteeEmail}: ${error}`);
+            throw new functions.https.HttpsError('unknown', error);
+        })
+    ;
+});
+
+
+/**
+ * Join a family and send an invite acceptance message.
+ * Implemented as a HTTPS callable function f(data, context) which is
+ *
+ * - getting an inviting user record from the system by the inviting email;
+ * - getting an inviting device token from database by the inviting user uid;
+ * - composing an invite acceptance message using device token;
+ * - sending the message
+ */
+exports.joinFamily = functions.https.onCall((data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
+
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
+    const invitingEmail = data.invitingEmail;
+    const usersRef = admin.firestore().collection('users');
+    const familiesRef = admin.firestore().collection('families');
+
+    return admin.auth().getUserByEmail(invitingEmail)
+        .then( (invitingUserRecord) => {
+            const invitingUserUid = invitingUserRecord.uid;
+            return familiesRef.where('creator', '==', invitingUserUid)                                                  // query for families created by the inviting
+                .get()
+                .then(familyQuerySnapshot => {
+                    if (familyQuerySnapshot.empty) {                                                                    // no family; error
+                        console.log(`User ${invitingEmail} owns no family data`);
+                        return {
+                            returnCode: "91",
+                        }
+                    } else if (familyQuerySnapshot.size !== 1) {                                                        // many such families; error
+                        console.log(`User ${invitingEmail} has more than one family`);
+                        return {
+                            returnCode: "90",
+                        }
+                    } else {                                                                                            // the family exists; ok
+                        return familyQuerySnapshot.docs[0].ref
+                            .update({ members: FieldValue.arrayUnion(callerUid) })
+                            .then( (writeResult) => {
+                                const invitingUserRef = usersRef.doc(invitingUserUid);
+                                return invitingUserRef.get()
+                                    .then( (invitingUserSnapshot) => {
+                                        const invitingDeviceToken = invitingUserSnapshot.data().deviceToken;
+                                        const acceptMessage = {
+                                            token: invitingDeviceToken,
+                                            data: {
+                                                messageType: "acceptInvite",
+                                                inviteeEmail: callerEmail,
+                                            }
+                                        };
+                                        return admin.messaging().send(acceptMessage)
+                                            .then( (messageId) => {
+                                                return {
+                                                    returnCode: "00",
+                                                    messageId: messageId,
+                                                }
+                                            })
+                                            .catch( (error) => {
+                                                console.log(`The invite acceptance message from ${callerEmail} not sent to ${invitingEmail}: ${error}`);
+                                                return {
+                                                    returnCode: "93",
+                                                    errorMessage: error,
+                                                }
+                                            })
+                                        ;
+                                    })
+                                ;
+                            })
+                        ;
+                    }
+                })
+            ;
+        })
+        .catch((error) => {
+            console.log(`Unhandled error: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
@@ -76,8 +154,6 @@ exports.sendLocation = functions.https.onCall((data, context) => {
 });
 
 
-// --------------------------- Messaging: Token
-
 /**
  * Update a stored device token used for FCM
  * Implemented as a HTTPS callable function f(data, context) which is
@@ -87,14 +163,12 @@ exports.sendLocation = functions.https.onCall((data, context) => {
 exports.updateDeviceToken = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    const userUid = context.auth.uid;
-    // const name = context.auth.token.name || null;
-    // const picture = context.auth.token.picture || null;
-    const email = context.auth.token.email || null;
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
     const deviceToken = data.deviceToken;
 
     return admin.firestore().collection('users')                                                                        // the Firestore client
-        .doc(userUid)
+        .doc(callerUid)
         .set({ deviceToken: deviceToken })                                                                               // insert or update
         .then( (writeResult) => {
             return {
@@ -102,7 +176,7 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
             }
         })
         .catch((error) => {
-            console.log(`User ${email} error while updating ${deviceToken}: ${error}`);
+            console.log(`User ${callerEmail} error while updating ${deviceToken}: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
@@ -120,16 +194,16 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
 exports.createFamily = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    const userUid = context.auth.uid;
-    const email = context.auth.token.email || null;
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
     const familiesRef = admin.firestore().collection('families');
     let familyUid;
 
-    return familiesRef.where('creator', '==', userUid).get()                                                            // query for families created by the user
+    return familiesRef.where('creator', '==', callerUid).get()                                                            // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no such families; creating one
                 return familiesRef
-                    .add({creator: userUid})
+                    .add({creator: callerUid})
                     .then((writeResult) => {
                         familyUid = writeResult.id;
                         return {
@@ -139,7 +213,7 @@ exports.createFamily = functions.https.onCall((data, context) => {
                     })
                 ;
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
-                console.log(`User ${email} has more than one family`);
+                console.log(`User ${callerEmail} has more than one family`);
                 return {
                     returnCode: "90",
                 }
@@ -151,7 +225,7 @@ exports.createFamily = functions.https.onCall((data, context) => {
             }
         })
         .catch((error) => {
-            console.log(`User ${email} error while creating family data`);
+            console.log(`User ${callerEmail} error while creating family data`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
@@ -166,21 +240,21 @@ exports.createFamily = functions.https.onCall((data, context) => {
 exports.createFamilyMember = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    const userUid = context.auth.uid;
-    const email = context.auth.token.email || null;
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
     const familyMemberEmail = data.familyMemberEmail;
     const familiesRef = admin.firestore().collection('families');
 
-    return familiesRef.where('creator', '==', userUid)                                                                  // query for families created by the user
+    return familiesRef.where('creator', '==', callerUid)                                                                  // query for families created by the user
         .get()
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no family; error
-                console.log(`User ${email} owns no family data`);
+                console.log(`User ${callerEmail} owns no family data`);
                 return {
                     returnCode: "91",
                 }
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
-                console.log(`User ${email} has more than one family`);
+                console.log(`User ${callerEmail} has more than one family`);
                 return {
                     returnCode: "90",
                 }
@@ -200,7 +274,7 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
             }
         })
         .catch((error) => {
-            console.log(`User ${email} error while storing family member ${familyMemberEmail}: ${error}`);
+            console.log(`User ${callerEmail} error while storing family member ${familyMemberEmail}: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
@@ -215,21 +289,21 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
 exports.deleteFamilyMember = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    const userUid = context.auth.uid;
-    const email = context.auth.token.email || null;
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
     const familyMemberEmail = data.familyMemberEmail;
     const familiesRef = admin.firestore().collection('families');
 
-    return familiesRef.where('creator', '==', userUid)                                                                  // query for families created by the user
+    return familiesRef.where('creator', '==', callerUid)                                                                  // query for families created by the user
         .get()
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no family; error
-                console.log(`User ${email} owns no family data`);
+                console.log(`User ${callerEmail} owns no family data`);
                 return {
                     returnCode: "91",
                 }
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
-                console.log(`User ${email} has more than one family`);
+                console.log(`User ${callerEmail} has more than one family`);
                 return {
                     returnCode: "90",
                 }
@@ -249,7 +323,7 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
             }
         })
         .catch((error) => {
-            console.log(`User ${email} error while removing family member ${familyMemberEmail}: ${error}`);
+            console.log(`User ${callerEmail} error while removing family member ${familyMemberEmail}: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
