@@ -21,7 +21,7 @@ const FieldValue = admin.firestore.FieldValue;
 exports.sendInvite = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    const userUid = context.auth.uid;
+    const callerUid = context.auth.uid;
     const callerEmail = context.auth.token.email || null;
     const inviteeEmail = data.inviteeEmail;
     const usersRef = admin.firestore().collection('users');
@@ -61,8 +61,9 @@ exports.sendInvite = functions.https.onCall((data, context) => {
 /**
  * Join a family and send an invite acceptance message.
  * Implemented as a HTTPS callable function f(data, context) which is
- *
  * - getting an inviting user record from the system by the inviting email;
+ * - finding a family by the inviting user uid;
+ * - inserting or updating an attribute of the family document
  * - getting an inviting device token from database by the inviting user uid;
  * - composing an invite acceptance message using device token;
  * - sending the message
@@ -139,18 +140,29 @@ exports.joinFamily = functions.https.onCall((data, context) => {
 
 
 /**
- * Send a location from a minor app to major apps
- * Implemented as a HTTPS callable function f(data, context)
+ * Send a location from a minor to a creator of the family
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - finding a family which a caller belongs to;
+ *
+ * - getting an invitee user record from the system by the invitee email;
+ * - getting an invitee device token from database by the invitee user uid;
+ * - composing an invite message using device token;
+ * - sending the message
  */
-exports.sendLocation = functions.https.onCall((data, context) => {
-    console.log(data);
-
+exports.sendLocationFromMinor = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
-    return {                                                                                                            // sync return
-        returnCode: "00",
-    }
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
+    const location = data.location;
+    const usersRef = admin.firestore().collection('users');
 
+    // return
+    //     .catch((error) => {
+    //         console.log(`The location message from ${callerEmail} not sent to her family majors: ${error}`);
+    //         throw new functions.https.HttpsError('unknown', error);
+    //     })
+    // ;
 });
 
 
@@ -204,12 +216,16 @@ exports.createFamily = functions.https.onCall((data, context) => {
             if (querySnapshot.empty) {                                                                                  // no such families; creating one
                 return familiesRef
                     .add({creator: callerUid})
-                    .then((writeResult) => {
-                        familyUid = writeResult.id;
-                        return {
-                            returnCode: "00",
-                            familyUid: familyUid,
-                        }
+                    .then((familyRef) => {
+                        familyUid = familyRef.id;
+                        return familyRef.update({ members: FieldValue.arrayUnion(callerUid) })
+                            .then( (writeResult) => {
+                                return {
+                                    returnCode: "00",
+                                    familyUid: familyUid,
+                                }
+                            })
+                        ;
                     })
                 ;
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
