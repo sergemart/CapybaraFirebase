@@ -80,8 +80,7 @@ exports.joinFamily = functions.https.onCall((data, context) => {
     return admin.auth().getUserByEmail(invitingEmail)
         .then( (invitingUserRecord) => {
             const invitingUserUid = invitingUserRecord.uid;
-            return familiesRef.where('creator', '==', invitingUserUid)                                                  // query for families created by the inviting
-                .get()
+            return familiesRef.where('creator', '==', invitingUserUid).get()                                            // query for families created by the inviting
                 .then(familyQuerySnapshot => {
                     if (familyQuerySnapshot.empty) {                                                                    // no family; error
                         console.log(`User ${invitingEmail} owns no family data`);
@@ -94,8 +93,9 @@ exports.joinFamily = functions.https.onCall((data, context) => {
                             returnCode: "90",
                         }
                     } else {                                                                                            // the family exists; ok
-                        return familyQuerySnapshot.docs[0].ref
-                            .update({ members: FieldValue.arrayUnion(callerUid) })
+                        return familyQuerySnapshot.docs[0].ref.update({
+                            members: FieldValue.arrayUnion(callerUid)
+                        })
                             .then( (writeResult) => {
                                 const invitingUserRef = usersRef.doc(invitingUserUid);
                                 return invitingUserRef.get()
@@ -179,9 +179,9 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
     const callerEmail = context.auth.token.email || null;
     const deviceToken = data.deviceToken;
 
-    return admin.firestore().collection('users')                                                                        // the Firestore client
-        .doc(callerUid)
-        .set({ deviceToken: deviceToken })                                                                               // insert or update
+    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update
+            deviceToken: deviceToken
+        })
         .then( (writeResult) => {
             return {
                 returnCode: "00",
@@ -214,11 +214,14 @@ exports.createFamily = functions.https.onCall((data, context) => {
     return familiesRef.where('creator', '==', callerUid).get()                                                            // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no such families; creating one
-                return familiesRef
-                    .add({creator: callerUid})
+                return familiesRef.add({
+                    creator: callerUid
+                })
                     .then((familyRef) => {
                         familyUid = familyRef.id;
-                        return familyRef.update({ members: FieldValue.arrayUnion(callerUid) })
+                        return familyRef.update({
+                            members: FieldValue.arrayUnion(callerUid)
+                        })
                             .then( (writeResult) => {
                                 return {
                                     returnCode: "00",
@@ -261,8 +264,7 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
     const familyMemberEmail = data.familyMemberEmail;
     const familiesRef = admin.firestore().collection('families');
 
-    return familiesRef.where('creator', '==', callerUid)                                                                  // query for families created by the user
-        .get()
+    return familiesRef.where('creator', '==', callerUid).get()                                                          // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no family; error
                 console.log(`User ${callerEmail} owns no family data`);
@@ -277,8 +279,9 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
             } else {                                                                                                    // the family exists; ok
                 return admin.auth().getUserByEmail(familyMemberEmail)                                                   // get a member user record by a given email
                     .then( (userRecord) => {
-                        return querySnapshot.docs[0].ref                                                                // get DocumentReference from DocumentSnapshot
-                            .update({ members: FieldValue.arrayUnion(userRecord.uid) })
+                        return querySnapshot.docs[0].ref.update({                                                       // get DocumentReference from DocumentSnapshot
+                                members: FieldValue.arrayUnion(userRecord.uid)
+                            })
                             .then( (writeResult) => {
                                 return {
                                     returnCode: "00",
@@ -310,8 +313,7 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
     const familyMemberEmail = data.familyMemberEmail;
     const familiesRef = admin.firestore().collection('families');
 
-    return familiesRef.where('creator', '==', callerUid)                                                                  // query for families created by the user
-        .get()
+    return familiesRef.where('creator', '==', callerUid).get()                                                          // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no family; error
                 console.log(`User ${callerEmail} owns no family data`);
@@ -326,8 +328,9 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
             } else {                                                                                                    // the family exists; ok
                 return admin.auth().getUserByEmail(familyMemberEmail)                                                   // get a member user record by a given email
                     .then( (userRecord) => {
-                        return querySnapshot.docs[0].ref                                                                // get DocumentReference from DocumentSnapshot
-                            .update({ members: FieldValue.arrayRemove(userRecord.uid) })
+                        return querySnapshot.docs[0].ref.update({                                                       // get DocumentReference from DocumentSnapshot
+                            members: FieldValue.arrayRemove(userRecord.uid)
+                        })
                             .then( (writeResult) => {
                                 return {
                                     returnCode: "00",
