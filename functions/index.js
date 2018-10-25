@@ -1,12 +1,22 @@
 'use strict';
 
+const MESSAGE_TYPE_LOCATION = 'location';
+const MESSAGE_TYPE_INVITE = 'invite';
+const MESSAGE_TYPE_ACCEPT_INVITE = 'acceptInvite';
+
+const RETURN_CODE_NO_FAMILY = 'no_family';
+const RETURN_CODE_MORE_THAN_ONE_FAMILY = 'many_families';
+const RETURN_CODE_SENT = 'sent';
+const RETURN_CODE_NOT_SENT = 'not_sent';
+const RETURN_CODE_ALL_SENT = 'all_sent';
+const RETURN_CODE_SOME_SENT = 'some_sent';
+const RETURN_CODE_NONE_SENT = 'none_sent';
+
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 admin.initializeApp();
-
 const settings = {timestampsInSnapshots: true};                                                                         // to avoid warning in the console log
 admin.firestore().settings(settings);
-
 const FieldValue = admin.firestore.FieldValue;
 
 
@@ -35,7 +45,7 @@ exports.sendInvite = functions.https.onCall((data, context) => {
                     const inviteMessage = {
                         token: deviceToken,
                         data: {
-                            messageType: "invite",
+                            messageType: MESSAGE_TYPE_INVITE,
                             invitingEmail: callerEmail,
                         }
                     };
@@ -104,7 +114,7 @@ exports.joinFamily = functions.https.onCall((data, context) => {
                                         const acceptMessage = {
                                             token: invitingDeviceToken,
                                             data: {
-                                                messageType: "acceptInvite",
+                                                messageType: MESSAGE_TYPE_ACCEPT_INVITE,
                                                 inviteeEmail: callerEmail,
                                             }
                                         };
@@ -140,29 +150,90 @@ exports.joinFamily = functions.https.onCall((data, context) => {
 
 
 /**
- * Send a location from a minor to a creator of the family
+ * Send a location to family members
  * Implemented as a HTTPS callable function f(data, context) which is
- * - finding a family which a caller belongs to;
- *
- * - getting an invitee user record from the system by the invitee email;
- * - getting an invitee device token from database by the invitee user uid;
- * - composing an invite message using device token;
- * - sending the message
+ * - finds members of the family, which caller belongs to;
+ * - for each member creates a chained atomic promise which gets the member's token and sends him a location message;
+ * - makes a composite promise from an array of the atomic promises
  */
-exports.sendLocationFromMinor = functions.https.onCall((data, context) => {
+exports.sendLocation = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
 
     const callerUid = context.auth.uid;
     const callerEmail = context.auth.token.email || null;
     const location = data.location;
     const usersRef = admin.firestore().collection('users');
+    const familiesRef = admin.firestore().collection('families');
 
-    // return
-    //     .catch((error) => {
-    //         console.log(`The location message from ${callerEmail} not sent to her family majors: ${error}`);
-    //         throw new functions.https.HttpsError('unknown', error);
-    //     })
-    // ;
+    return familiesRef.where('members', 'array-contains', callerUid).get()                                              // query for families which the user belongs to
+        .then(querySnapshot => {
+            if (querySnapshot.empty) {                                                                                  // no such families; error
+                console.log(`User ${callerEmail} has no family`);
+                return {
+                    returnCode: RETURN_CODE_NO_FAMILY,
+                }
+            } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
+                console.log(`User ${callerEmail} has more than one family`);
+                return {
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
+                }
+            } else {                                                                                                    // the family found; ok
+                const memberUids = querySnapshot.docs[0].data().members;
+
+                // Make up an array of promises
+                let sendPromises = [];
+                for (let memberUid of memberUids) {
+                    if (memberUid === callerUid) continue;                                                               // do not send a message to himself
+                    let memberRef = usersRef.doc(memberUid);
+                    let sendPromise = memberRef.get()
+                        .then( (memberSnapshot) => {
+                            let memberDeviceToken = memberSnapshot.data().deviceToken;
+                            let locationMessage = {
+                                token: memberDeviceToken,
+                                data: {
+                                    messageType: MESSAGE_TYPE_LOCATION,
+                                    location: location,
+                                }
+                            };
+                            return admin.messaging().send(locationMessage)
+                                .then((messageId) => {
+                                    return Promise.resolve(RETURN_CODE_SENT);                                           // then() returns a promise to make sendPromise be a promise in the end of the chain
+                                })
+                                .catch((error) => {
+                                    console.log(`Message to ${memberUid} not sent: ${error}`);
+                                    return Promise.resolve(RETURN_CODE_NOT_SENT);                                       // catch() returns a promise to make sendPromise be a promise in the end of the chain
+                                })
+                            ;
+                        })
+                    ;
+                    sendPromises.push(sendPromise);
+                }
+
+                return Promise.all(sendPromises);                                                                       // this makes then() above be a promise and allows to chain it with the then() below
+            }
+        })
+        .then( (arrayOfReturnCodes) => {
+            if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT)) {
+                return {
+                    returnCode: RETURN_CODE_SOME_SENT,
+                }
+            } else if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && !( arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) )) {
+                return {
+                    returnCode: RETURN_CODE_ALL_SENT,
+                }
+            } else if ( !(arrayOfReturnCodes.includes(RETURN_CODE_SENT)) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) ) {
+                return {
+                    returnCode: RETURN_CODE_NONE_SENT,
+                }
+            } else {
+                throw new functions.https.HttpsError('internal', 'Wrong return codes from atomic promises');
+            }
+        })
+        .catch((error) => {
+            console.log(`The location messages from ${callerEmail} not sent: ${error}`);
+            throw new functions.https.HttpsError('unknown', error);
+        })
+    ;
 });
 
 
@@ -211,7 +282,7 @@ exports.createFamily = functions.https.onCall((data, context) => {
     const familiesRef = admin.firestore().collection('families');
     let familyUid;
 
-    return familiesRef.where('creator', '==', callerUid).get()                                                            // query for families created by the user
+    return familiesRef.where('creator', '==', callerUid).get()                                                          // query for families created by the user
         .then(querySnapshot => {
             if (querySnapshot.empty) {                                                                                  // no such families; creating one
                 return familiesRef.add({
