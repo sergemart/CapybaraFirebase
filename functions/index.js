@@ -4,6 +4,10 @@ const MESSAGE_TYPE_LOCATION = 'location';
 const MESSAGE_TYPE_INVITE = 'invite';
 const MESSAGE_TYPE_ACCEPT_INVITE = 'acceptInvite';
 
+const RETURN_CODE_OK = 'ok';
+const RETURN_CODE_CREATED = 'created';
+const RETURN_CODE_DELETED = 'deleted';
+const RETURN_CODE_EXIST = 'exist';
 const RETURN_CODE_NO_FAMILY = 'no_family';
 const RETURN_CODE_MORE_THAN_ONE_FAMILY = 'many_families';
 const RETURN_CODE_SENT = 'sent';
@@ -52,7 +56,7 @@ exports.sendInvite = functions.https.onCall((data, context) => {
                     return admin.messaging().send(inviteMessage)
                         .then( (messageId) => {
                             return {
-                                returnCode: "00",
+                                returnCode: RETURN_CODE_SENT,
                                 messageId: messageId,
                             }
                         })
@@ -95,12 +99,12 @@ exports.joinFamily = functions.https.onCall((data, context) => {
                     if (familyQuerySnapshot.empty) {                                                                    // no family; error
                         console.log(`User ${invitingEmail} owns no family data`);
                         return {
-                            returnCode: "91",
+                            returnCode: RETURN_CODE_NO_FAMILY,
                         }
                     } else if (familyQuerySnapshot.size !== 1) {                                                        // many such families; error
                         console.log(`User ${invitingEmail} has more than one family`);
                         return {
-                            returnCode: "90",
+                            returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
                         }
                     } else {                                                                                            // the family exists; ok
                         return familyQuerySnapshot.docs[0].ref.update({
@@ -121,14 +125,14 @@ exports.joinFamily = functions.https.onCall((data, context) => {
                                         return admin.messaging().send(acceptMessage)
                                             .then( (messageId) => {
                                                 return {
-                                                    returnCode: "00",
+                                                    returnCode: RETURN_CODE_OK,
                                                     messageId: messageId,
                                                 }
                                             })
                                             .catch( (error) => {
                                                 console.log(`The invite acceptance message from ${callerEmail} not sent to ${invitingEmail}: ${error}`);
                                                 return {
-                                                    returnCode: "93",
+                                                    returnCode: RETURN_CODE_NOT_SENT,
                                                     errorMessage: error,
                                                 }
                                             })
@@ -183,7 +187,7 @@ exports.sendLocation = functions.https.onCall((data, context) => {
                 // Make up an array of promises
                 let sendPromises = [];
                 for (let memberUid of memberUids) {
-                    if (memberUid === callerUid) continue;                                                               // do not send a message to himself
+                    if (memberUid === callerUid) continue;                                                               // do not send a message to self
                     let memberRef = usersRef.doc(memberUid);
                     let sendPromise = memberRef.get()
                         .then( (memberSnapshot) => {
@@ -193,6 +197,7 @@ exports.sendLocation = functions.https.onCall((data, context) => {
                                 data: {
                                     messageType: MESSAGE_TYPE_LOCATION,
                                     location: location,
+                                    senderEmail: callerEmail,
                                 }
                             };
                             return admin.messaging().send(locationMessage)
@@ -255,7 +260,7 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
         })
         .then( (writeResult) => {
             return {
-                returnCode: "00",
+                returnCode: RETURN_CODE_OK,
             }
         })
         .catch((error) => {
@@ -295,7 +300,7 @@ exports.createFamily = functions.https.onCall((data, context) => {
                         })
                             .then( (writeResult) => {
                                 return {
-                                    returnCode: "00",
+                                    returnCode: RETURN_CODE_CREATED,
                                     familyUid: familyUid,
                                 }
                             })
@@ -305,11 +310,11 @@ exports.createFamily = functions.https.onCall((data, context) => {
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
                 console.log(`User ${callerEmail} has more than one family`);
                 return {
-                    returnCode: "90",
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
                 }
             } else {                                                                                                    // the family already exists; return its id
                 return {
-                    returnCode: "01",
+                    returnCode: RETURN_CODE_EXIST,
                     familyUid: querySnapshot.docs[0].id,                                                                // using DocumentSnapshot here
                 }
             }
@@ -340,12 +345,12 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
             if (querySnapshot.empty) {                                                                                  // no family; error
                 console.log(`User ${callerEmail} owns no family data`);
                 return {
-                    returnCode: "91",
+                    returnCode: RETURN_CODE_NO_FAMILY,
                 }
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
                 console.log(`User ${callerEmail} has more than one family`);
                 return {
-                    returnCode: "90",
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
                 }
             } else {                                                                                                    // the family exists; ok
                 return admin.auth().getUserByEmail(familyMemberEmail)                                                   // get a member user record by a given email
@@ -355,7 +360,7 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
                             })
                             .then( (writeResult) => {
                                 return {
-                                    returnCode: "00",
+                                    returnCode: RETURN_CODE_CREATED,
                                 }
                             })
                         ;
@@ -389,12 +394,12 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
             if (querySnapshot.empty) {                                                                                  // no family; error
                 console.log(`User ${callerEmail} owns no family data`);
                 return {
-                    returnCode: "91",
+                    returnCode: RETURN_CODE_NO_FAMILY,
                 }
             } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
                 console.log(`User ${callerEmail} has more than one family`);
                 return {
-                    returnCode: "90",
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
                 }
             } else {                                                                                                    // the family exists; ok
                 return admin.auth().getUserByEmail(familyMemberEmail)                                                   // get a member user record by a given email
@@ -404,7 +409,7 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
                         })
                             .then( (writeResult) => {
                                 return {
-                                    returnCode: "00",
+                                    returnCode: RETURN_CODE_DELETED,
                                 }
                             })
                         ;
