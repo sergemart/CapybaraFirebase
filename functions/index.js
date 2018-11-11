@@ -379,7 +379,9 @@ exports.createFamilyMember = functions.https.onCall((data, context) => {
 /**
  * Remove a family member from family data
  * Implemented as a HTTPS callable function f(data, context) which is
- * - removing an attribute from a document
+ * - searching a family which creator ia the caller;
+ * - getting a user UID by the email;
+ * - removing an attribute (the UID got) from a document (the family found)
  */
 exports.deleteFamilyMember = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
@@ -419,6 +421,56 @@ exports.deleteFamilyMember = functions.https.onCall((data, context) => {
         })
         .catch((error) => {
             console.log(`User ${callerEmail} error while removing family member ${familyMemberEmail}: ${error}`);
+            throw new functions.https.HttpsError('unknown', error);
+        })
+    ;
+});
+
+
+/**
+ * Check if the caller belongs to any family. Return a family owner email
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - searching the family record which members attribute contains the caller UID
+ * - getting the user record of the family creator;
+ * - returning the email from this record
+ */
+exports.checkFamilyMembership = functions.https.onCall((data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
+
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
+    const familiesRef = admin.firestore().collection('families');
+
+    return familiesRef.where('members', 'array-contains', callerUid).get()                                              // query for families which the caller belongs to
+        .then(querySnapshot => {
+            if (querySnapshot.empty) {                                                                                  // no family; error
+                console.log(`User ${callerEmail} belongs to no family data`);
+                return {
+                    returnCode: RETURN_CODE_NO_FAMILY,
+                }
+            } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
+                console.log(`User ${callerEmail} belongs to more than one family`);
+                return {
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
+                }
+            } else {                                                                                                    // the family exists; ok
+                const familyCreatorUid = querySnapshot.docs[0].data().creator;
+                return admin.auth().getUser(familyCreatorUid)
+                    .then( (userRecord) => {
+                        return {
+                            returnCode: RETURN_CODE_EXIST,
+                            creatorEmail: userRecord.email,
+                        }
+                    })
+                    .catch((error) => {
+                        console.log(`User ${callerEmail} error while getting a family owner: ${error}`);
+                        throw new functions.https.HttpsError('unknown', error);
+                    })
+                ;
+            }
+        })
+        .catch((error) => {
+            console.log(`User ${callerEmail} error while searching a family: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
