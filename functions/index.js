@@ -1,5 +1,6 @@
 'use strict';
 
+const MESSAGE_TYPE_LOCATION_REQUEST = 'locationRequest';
 const MESSAGE_TYPE_LOCATION = 'location';
 const MESSAGE_TYPE_INVITE = 'invite';
 const MESSAGE_TYPE_ACCEPT_INVITE = 'acceptInvite';
@@ -147,6 +148,96 @@ exports.joinFamily = functions.https.onCall((data, context) => {
         })
         .catch((error) => {
             console.log(`Unhandled error: ${error}`);
+            throw new functions.https.HttpsError('unknown', error);
+        })
+    ;
+});
+
+
+/**
+ * Request locations from family members
+ * Implemented as a HTTPS callable function f(data, context) which is
+ * - finds members of the family, which caller belongs to;
+ * - for each member creates a chained atomic promise which gets the member's token and sends him a request message;
+ * - makes a composite promise from an array of the atomic promises
+ */
+exports.requestLocations = functions.https.onCall((data, context) => {
+    if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
+
+    const callerUid = context.auth.uid;
+    const callerEmail = context.auth.token.email || null;
+    const usersRef = admin.firestore().collection('users');
+    const familiesRef = admin.firestore().collection('families');
+
+    return familiesRef.where('members', 'array-contains', callerUid).get()                                              // query for families which the user belongs to
+        .then(querySnapshot => {
+            if (querySnapshot.empty) {                                                                                  // no such families; error
+                console.log(`User ${callerEmail} has no family`);
+                return {
+                    returnCode: RETURN_CODE_NO_FAMILY,
+                }
+            } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
+                console.log(`User ${callerEmail} has more than one family`);
+                return {
+                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
+                }
+            } else {                                                                                                    // the family found; ok
+                const memberUids = querySnapshot.docs[0].data().members;
+
+                // Make up an array of promises
+                let sendPromises = [];
+                for (let memberUid of memberUids) {
+                    if (memberUid === callerUid) continue;                                                               // do not send a message to self
+                    let memberRef = usersRef.doc(memberUid);
+                    let sendPromise = memberRef.get()
+                        .then( (memberSnapshot) => {
+                            let memberDeviceToken = memberSnapshot.data().deviceToken;
+                            let locationRequestMessage = {
+                                token: memberDeviceToken,
+                                data: {
+                                    messageType: MESSAGE_TYPE_LOCATION_REQUEST,
+                                    senderEmail: callerEmail,
+                                },
+                                android: {
+                                    priority: 'high',
+                                }
+                            };
+                            return admin.messaging().send(locationRequestMessage)
+                                .then((messageId) => {
+                                    return Promise.resolve(RETURN_CODE_SENT);                                           // then() returns a promise to make sendPromise be a promise in the end of the chain
+                                })
+                                .catch((error) => {
+                                    console.log(`Message to ${memberUid} not sent: ${error}`);
+                                    return Promise.resolve(RETURN_CODE_NOT_SENT);                                       // catch() returns a promise to make sendPromise be a promise in the end of the chain
+                                })
+                            ;
+                        })
+                    ;
+                    sendPromises.push(sendPromise);
+                }
+
+                return Promise.all(sendPromises);                                                                       // this makes then() above be a promise and allows to chain it with the then() below
+            }
+        })
+        .then( (arrayOfReturnCodes) => {
+            if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT)) {
+                return {
+                    returnCode: RETURN_CODE_SOME_SENT,
+                }
+            } else if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && !( arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) )) {
+                return {
+                    returnCode: RETURN_CODE_ALL_SENT,
+                }
+            } else if ( !(arrayOfReturnCodes.includes(RETURN_CODE_SENT)) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) ) {
+                return {
+                    returnCode: RETURN_CODE_NONE_SENT,
+                }
+            } else {
+                throw new functions.https.HttpsError('internal', 'Wrong return codes from atomic promises');
+            }
+        })
+        .catch((error) => {
+            console.log(`The location messages from ${callerEmail} not sent: ${error}`);
             throw new functions.https.HttpsError('unknown', error);
         })
     ;
