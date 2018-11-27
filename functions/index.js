@@ -247,6 +247,7 @@ exports.requestLocations = functions.https.onCall((data, context) => {
 /**
  * Send a location to family members
  * Implemented as a HTTPS callable function f(data, context) which is
+ * - writes a location to the calling user record
  * - finds members of the family, which caller belongs to;
  * - for each member creates a chained atomic promise which gets the member's token and sends him a location message;
  * - makes a composite promise from an array of the atomic promises
@@ -260,70 +261,77 @@ exports.sendLocation = functions.https.onCall((data, context) => {
     const usersRef = admin.firestore().collection('users');
     const familiesRef = admin.firestore().collection('families');
 
-    return familiesRef.where('members', 'array-contains', callerUid).get()                                              // query for families which the user belongs to
-        .then(querySnapshot => {
-            if (querySnapshot.empty) {                                                                                  // no such families; error
-                console.log(`User ${callerEmail} has no family`);
-                return {
-                    returnCode: RETURN_CODE_NO_FAMILY,
-                }
-            } else if (querySnapshot.size !== 1) {                                                                      // many such families; error
-                console.log(`User ${callerEmail} has more than one family`);
-                return {
-                    returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
-                }
-            } else {                                                                                                    // the family found; ok
-                const memberUids = querySnapshot.docs[0].data().members;
+    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the location
+            location: location
+        },{
+            merge: true
+        })
+        .then( (writeResult) => {
+            return familiesRef.where('members', 'array-contains', callerUid).get()                                      // query for families which the user belongs to
+                .then(querySnapshot => {
+                    if (querySnapshot.empty) {                                                                          // no such families; error
+                        console.log(`User ${callerEmail} has no family`);
+                        return {
+                            returnCode: RETURN_CODE_NO_FAMILY,
+                        }
+                    } else if (querySnapshot.size !== 1) {                                                              // many such families; error
+                        console.log(`User ${callerEmail} has more than one family`);
+                        return {
+                            returnCode: RETURN_CODE_MORE_THAN_ONE_FAMILY,
+                        }
+                    } else {                                                                                            // the family found; ok
+                        const memberUids = querySnapshot.docs[0].data().members;
 
-                // Make up an array of promises
-                let sendPromises = [];
-                for (let memberUid of memberUids) {
-                    if (memberUid === callerUid) continue;                                                               // do not send a message to self
-                    let memberRef = usersRef.doc(memberUid);
-                    let sendPromise = memberRef.get()
-                        .then( (memberSnapshot) => {
-                            let memberDeviceToken = memberSnapshot.data().deviceToken;
-                            let locationMessage = {
-                                token: memberDeviceToken,
-                                data: {
-                                    messageType: MESSAGE_TYPE_LOCATION,
-                                    location: location,
-                                    senderEmail: callerEmail,
-                                }
-                            };
-                            return admin.messaging().send(locationMessage)
-                                .then((messageId) => {
-                                    return Promise.resolve(RETURN_CODE_SENT);                                           // then() returns a promise to make sendPromise be a promise in the end of the chain
-                                })
-                                .catch((error) => {
-                                    console.log(`Message to ${memberUid} not sent: ${error}`);
-                                    return Promise.resolve(RETURN_CODE_NOT_SENT);                                       // catch() returns a promise to make sendPromise be a promise in the end of the chain
+                        // Make up an array of promises
+                        let sendPromises = [];
+                        for (let memberUid of memberUids) {
+                            if (memberUid === callerUid) continue;                                                      // do not send a message to self
+                            let memberRef = usersRef.doc(memberUid);
+                            let sendPromise = memberRef.get()
+                                .then( (memberSnapshot) => {
+                                    let memberDeviceToken = memberSnapshot.data().deviceToken;
+                                    let locationMessage = {
+                                        token: memberDeviceToken,
+                                        data: {
+                                            messageType: MESSAGE_TYPE_LOCATION,
+                                            location: location,
+                                            senderEmail: callerEmail,
+                                        }
+                                    };
+                                    return admin.messaging().send(locationMessage)
+                                        .then((messageId) => {
+                                            return Promise.resolve(RETURN_CODE_SENT);                                   // then() returns a promise to make sendPromise be a promise in the end of the chain
+                                        })
+                                        .catch((error) => {
+                                            console.log(`Message to ${memberUid} not sent: ${error}`);
+                                            return Promise.resolve(RETURN_CODE_NOT_SENT);                               // catch() returns a promise to make sendPromise be a promise in the end of the chain
+                                        })
+                                    ;
                                 })
                             ;
-                        })
-                    ;
-                    sendPromises.push(sendPromise);
-                }
-
-                return Promise.all(sendPromises);                                                                       // this makes then() above be a promise and allows to chain it with the then() below
-            }
-        })
-        .then( (arrayOfReturnCodes) => {
-            if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT)) {
-                return {
-                    returnCode: RETURN_CODE_SOME_SENT,
-                }
-            } else if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && !( arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) )) {
-                return {
-                    returnCode: RETURN_CODE_ALL_SENT,
-                }
-            } else if ( !(arrayOfReturnCodes.includes(RETURN_CODE_SENT)) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) ) {
-                return {
-                    returnCode: RETURN_CODE_NONE_SENT,
-                }
-            } else {
-                throw new functions.https.HttpsError('internal', 'Wrong return codes from atomic promises');
-            }
+                            sendPromises.push(sendPromise);
+                        }
+                        return Promise.all(sendPromises);                                                               // this makes then() above be a promise and allows to chain it with the then() below
+                    }
+                })
+                .then( (arrayOfReturnCodes) => {
+                    if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT)) {
+                        return {
+                            returnCode: RETURN_CODE_SOME_SENT,
+                        }
+                    } else if (arrayOfReturnCodes.includes(RETURN_CODE_SENT) && !( arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) )) {
+                        return {
+                            returnCode: RETURN_CODE_ALL_SENT,
+                        }
+                    } else if ( !(arrayOfReturnCodes.includes(RETURN_CODE_SENT)) && arrayOfReturnCodes.includes(RETURN_CODE_NOT_SENT) ) {
+                        return {
+                            returnCode: RETURN_CODE_NONE_SENT,
+                        }
+                    } else {
+                        throw new functions.https.HttpsError('internal', 'Wrong return codes from atomic promises');
+                    }
+                })
+            ;
         })
         .catch((error) => {
             console.log(`The location messages from ${callerEmail} not sent: ${error}`);
@@ -346,8 +354,10 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
     const callerEmail = context.auth.token.email || null;
     const deviceToken = data.deviceToken;
 
-    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update
+    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the token
             deviceToken: deviceToken
+        },{
+            merge: true
         })
         .then( (writeResult) => {
             return {
