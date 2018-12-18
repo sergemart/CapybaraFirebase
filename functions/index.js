@@ -261,7 +261,7 @@ exports.sendLocation = functions.https.onCall((data, context) => {
     const usersRef = admin.firestore().collection('users');
     const familiesRef = admin.firestore().collection('families');
 
-    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the location
+    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the document
             location: location
         },{
             merge: true
@@ -345,7 +345,8 @@ exports.sendLocation = functions.https.onCall((data, context) => {
  * Update a stored device token used for FCM
  * Implemented as a HTTPS callable function f(data, context) which is
  * - getting a calling user document from the database by the system-provided uid;
- * - replacing the document content with new one containing a device token (TODO: make update instead of replace)
+ * - updating the document.
+ * THE CALL IS REPLACED TO THE DIRECT FIREBASE CALL FROM THE APP
  */
 exports.updateDeviceToken = functions.https.onCall((data, context) => {
     if (!context.auth) throw new functions.https.HttpsError('failed-precondition', "Not authenticated");
@@ -354,7 +355,7 @@ exports.updateDeviceToken = functions.https.onCall((data, context) => {
     const callerEmail = context.auth.token.email || null;
     const deviceToken = data.deviceToken;
 
-    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the token
+    return admin.firestore().collection('users').doc(callerUid).set({                                                   // insert or update the document
             deviceToken: deviceToken
         },{
             merge: true
